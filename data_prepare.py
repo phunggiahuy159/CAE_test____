@@ -1,5 +1,4 @@
 import pandas as pd
-from pyvi import ViTokenizer
 import numpy as np 
 import string 
 from torch.utils.data import Dataset, DataLoader
@@ -7,115 +6,59 @@ from transformers import AutoTokenizer, AutoModel, DataCollatorWithPadding
 import torch
 import torch.nn as nn
 from torch.nn.functional import softmax
-import f1__ as f1
 from tqdm import tqdm
 
+import pandas as pd
+import numpy as np
+import torch
+from torch.utils.data import Dataset, DataLoader
+from transformers import AutoTokenizer, DataCollatorWithPadding
 
-aspect2idx={'CAMERA' : 0,
-            'FEATURES' : 1,
-            'BATTERY':2,
-            'PERFORMANCE' : 3,
-            'DESIGN' : 4,
-            'GENERAL' : 5,
-            'PRICE' : 6,
-            'SCREEN' : 7,
-            'SER&ACC' : 8,
-            'STORAGE' : 9 
-}   
-sentiment2idx={'Positive':2,
-               'Neutral':1,
-               'Negative':0
+# Define aspect and sentiment mappings
+aspect2idx = {
+    'CAMERA': 0, 'FEATURES': 1, 'BATTERY': 2, 'PERFORMANCE': 3,
+    'DESIGN': 4, 'GENERAL': 5, 'PRICE': 6, 'SCREEN': 7, 'SER&ACC': 8, 'STORAGE': 9
 }
+sentiment2idx = {
+    'Positive': 2, 'Neutral': 1, 'Negative': 0
+}
+num_aspect=10
+# Convert label cell to tensor
+def convert_label(cell):
+    return torch.tensor([float(x) for x in cell.strip('[]').split()])
 
-num_aspect = 10
-num_sentiment = 3
+# Load train data
+train = pd.read_csv("D:\code\intro_ai_ABSA\Train_preprocessed_with_-1.csv")
+sentences_train = list(train['comment'])
+labels_train = list(train['label'].apply(convert_label))
 
-def convert_label(text):
-    text = text.replace('{OTHERS};', '')
-    all_aspect = text.split(';')
-    all_aspect = [x.strip(r"{}") for x in all_aspect if x]  
-    res = np.zeros(2 * num_aspect)
-
-    for x in all_aspect:
-        cate, sent = x.split('#')
-        if cate in aspect2idx and sent in sentiment2idx:
-            cate_value = aspect2idx[cate]
-            sent_value = sentiment2idx[sent]
-            res[cate_value] = 1
-            res[cate_value + num_aspect] = sent_value
-    
-    return res
-    
-
-
-punc = string.punctuation
-tokenizer = ViTokenizer.tokenize
-
-train_df = pd.read_csv("D:\code\intro_ai_ABSA\CAE____\Train.csv")
-# dev_df = pd.read_csv("Dev.csv")
-test_df = pd.read_csv("D:\code\intro_ai_ABSA\CAE____\Test.csv")
-
-def lowercase(df):
-    df['comment'] = df['comment'].str.lower()
-    return df
-
-def remove_punc(text):
-    return text.translate(str.maketrans('', '', punc))
-
-def final_rmv_punc(df):
-    df['comment'] = df['comment'].apply(remove_punc)
-    return df
-
-def remove_num(df):
-    df['comment'] = df['comment'].replace(to_replace=r'\d', value='', regex=True)
-    return df
-
-def tokenize(df):
-    df['comment'] = df['comment'].apply(tokenizer)
-    return df
-
-def preprocess(df):
-    df.drop(['n_star', 'date_time'],axis=1, inplace = True)
-    df = lowercase(df)
-    df = final_rmv_punc(df)
-    df = remove_num(df)
-    df = tokenize(df)
-    df['label'] = df['label'].apply(convert_label)
-    return df
-
-train = preprocess(train_df)
-test = preprocess(test_df)
-
-sentences_train=list(train['comment'])
-sentences_test=list(test['comment'])
-labels_train=list(train['label'])
-labels_test=list(test['label'])
-
+# Initialize tokenizer
 tokenizer = AutoTokenizer.from_pretrained('bkai-foundation-models/vietnamese-bi-encoder')
+
+# Define dataset
 class CustomTextDataset(Dataset):
-    def __init__(self, texts,labels, tokenizer, max_length=128):
+    def __init__(self, texts, labels, tokenizer, max_length=128):
         self.texts = texts
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.labels=labels
+        self.labels = labels
+
     def __len__(self):
         return len(self.texts)
+
     def __getitem__(self, idx):
         text = self.texts[idx]
-        labels=self.labels[idx]
+        labels = torch.tensor(self.labels[idx], dtype=torch.float32)  # Convert labels to tensor
         encoding = self.tokenizer(text, padding='max_length', truncation=True, max_length=self.max_length, return_tensors='pt')
-        dic={key: val.squeeze(0) for key, val in encoding.items()}
-        dic['label']=labels 
+        dic = {key: val.squeeze(0) for key, val in encoding.items()}
+        dic['labels'] = labels  # Use 'labels' key here if consistent with your model
         return dic
 
-# Create dataset
-train_dataset=CustomTextDataset(sentences_train,labels_train, tokenizer)
-test_dataset=CustomTextDataset(sentences_test,labels_test,tokenizer)
+# Create dataset and dataloader
+train_dataset = CustomTextDataset(sentences_train, labels_train, tokenizer)
+data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=8, collate_fn=data_collator)
 
-# Data collator and dataloader
-data_collator=DataCollatorWithPadding(tokenizer=tokenizer)
-train_dataloader=DataLoader(train_dataset, shuffle=True, batch_size=8, collate_fn=data_collator)
-test_dataloader=DataLoader(test_dataset, shuffle=False, batch_size=8, collate_fn=data_collator)
 
 #model
 class AttentionInHtt(nn.Module):
@@ -156,8 +99,7 @@ class Cae(nn.Module):
         self.category_num = len(categories)
         self.polarity_num = len(polarities)
         self.category_loss = nn.BCEWithLogitsLoss()
-        self.sentiment_loss = nn.CrossEntropyLoss()
-        self._f1=f1.BinaryF1(0.5)
+        self.sentiment_loss = nn.CrossEntropyLoss(ignore_index=-1)
 
         # Get the embedding dimension directly from the word embedder
         embed_dim = word_embedder.embedding_dim  
@@ -172,12 +114,10 @@ class Cae(nn.Module):
         self.dropout_after_embedding = nn.Dropout(0.5)
         self.dropout_after_lstm = nn.Dropout(0.5)
 
-        self.category_fcs = nn.ModuleList([nn.Sequential(nn.Linear(embed_dim * 2, 16), nn.ReLU(), nn.Linear(16, 1)) for _ in range(self.category_num)])
-        self.sentiment_fc = nn.Sequential(nn.Linear(embed_dim * 2, 16), nn.ReLU(), nn.Linear(16, self.polarity_num))
+        self.category_fcs = nn.ModuleList([nn.Sequential(nn.Linear(embed_dim * 2, 32), nn.ReLU(), nn.Linear(32, 1)) for _ in range(self.category_num)])
+        self.sentiment_fc = nn.Sequential(nn.Linear(embed_dim * 2, 32), nn.ReLU(), nn.Linear(32, self.polarity_num))
 
     def forward(self, tokens, label, polarity_mask, mask):
-        mask = (tokens != 0).type(torch.FloatTensor)  
-        
         word_embeddings = self.word_embedder(tokens)
         word_embeddings = self.dropout_after_embedding(word_embeddings)
 
@@ -233,33 +173,35 @@ class Cae(nn.Module):
         if label is not None:
             category_labels = []
             polarity_labels = []
-            polarity_masks = []
+            # polarity_masks = []
             for i in range(self.category_num):
                 category_labels.append(label[:, i]) #term [:,] for batch
                 polarity_labels.append(label[:, i + self.category_num])
-                polarity_masks.append(polarity_mask[:, i]) #mask have same shape with label (just for category)
+                # polarity_masks.append(polarity_mask[:, i]) #mask have same shape with label (just for category)
 
+            # loss = 0
             loss = 0
             for i in range(self.category_num):
                 category_temp_loss = self.category_loss(final_category_outputs[i].squeeze(dim=-1), category_labels[i])
                 sentiment_temp_loss = self.sentiment_loss(final_sentiment_outputs[i], polarity_labels[i].long())
                 loss += category_temp_loss
-                loss += sentiment_temp_loss
+                # temp=sentiment_temp_loss
+                # loss+=temp.item()
+                loss=loss+sentiment_temp_loss
+                # loss += sentiment_temp_loss
 
             # # sentiment accuracy
-            sentiment_logit = torch.cat(final_sentiment_outputs)
-            sentiment_label = torch.cat(polarity_labels)
-            sentiment_mask = torch.cat(polarity_masks)
-            # self._accuracy(sentiment_logit, sentiment_label, sentiment_mask)
+#             sentiment_logit = torch.cat(final_sentiment_outputs)
+#             sentiment_label = torch.cat(polarity_labels)
+#             sentiment_mask = torch.cat(polarity_masks)
+#             # self._accuracy(sentiment_logit, sentiment_label, sentiment_mask)
 
-            # category f1
-            final_category_outputs_prob = [torch.sigmoid(e) for e in final_category_outputs]
-            category_prob = torch.cat(final_category_outputs_prob).squeeze()
-            category_label = torch.cat(category_labels)
-            self._f1(category_prob, category_label)
-            category_metric=self._f1.get_metric()
+#             # category f1
+#             final_category_outputs_prob = [torch.sigmoid(e) for e in final_category_outputs]
+#             category_prob = torch.cat(final_category_outputs_prob).squeeze()
+#             category_label = torch.cat(category_labels)
 
-            # output['loss'] = loss
+
         output = {
             'pred_category': [torch.sigmoid(e) for e in final_category_outputs],
             'pred_sentiment': [torch.softmax(e, dim=-1) for e in final_sentiment_outputs]
@@ -267,18 +209,40 @@ class Cae(nn.Module):
         
         return output, loss
 
+w2v=r'D:\code\intro_ai_ABSA\CAE____\W2V_150.txt'
+embedding_dim=150
+word_to_vec={}
+with open(w2v, 'r', encoding='utf-8') as file:
+    for line in file:
+        values=line.split()
+        word=values[0]
+        vector=np.asarray(values[1:], dtype='float32')
+        word_to_vec[word]=vector
+# Create a vocabulary and embedding matrix
+vocab=tokenizer.get_vocab()
+vocab_size=len(vocab)
+E=np.zeros((vocab_size, embedding_dim))
+'''the index of the word in vocab must be the same with the embedding matrix'''
+for word,idx in vocab.items():
+    if word in word_to_vec:
+        E[idx]=word_to_vec[word]
+    else:
+        E[idx]=np.random.normal(scale=0.6, size=(embedding_dim,))    
+embedding_matrix=torch.tensor(E, dtype=torch.float32)
+embedding_layer=nn.Embedding.from_pretrained(embedding_matrix, freeze=False)
+
+
 vocab=tokenizer.get_vocab()
 vocab_size=len(vocab)
 categories=aspect2idx.keys()
 polarities=sentiment2idx.keys()
-embedding_dim=300
 
-word_embedder = torch.nn.Embedding(vocab_size, embedding_dim)
+# word_embedder = torch.nn.Embedding(vocab_size, embedding_dim)
 lr=3e-4
-model = Cae(word_embedder, categories, polarities)
+model = Cae(embedding_layer, categories, polarities)
 optimizer=torch.optim.Adam(model.parameters(), lr=lr)
 
-epochs=1
+epochs=10
 for epoch in range(epochs):
     model.train()
     total_loss=0
@@ -292,9 +256,8 @@ for epoch in range(epochs):
         loss.backward()
         optimizer.step()
         total_loss+=loss
-        break
     avg_loss=total_loss/len(train_dataloader)
     print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss}")
-torch.save(model.state_dict(), "CAE.pth")
+# torch.save(model.state_dict(), "CAE_final.pth")
 
 
