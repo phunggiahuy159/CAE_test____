@@ -1,263 +1,156 @@
 import pandas as pd
+from pyvi import ViTokenizer
 import numpy as np 
 import string 
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModel, DataCollatorWithPadding
-import torch
-import torch.nn as nn
-from torch.nn.functional import softmax
-from tqdm import tqdm
+import re 
 
-import pandas as pd
-import numpy as np
-import torch
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, DataCollatorWithPadding
 
-# Define aspect and sentiment mappings
-aspect2idx = {
-    'CAMERA': 0, 'FEATURES': 1, 'BATTERY': 2, 'PERFORMANCE': 3,
-    'DESIGN': 4, 'GENERAL': 5, 'PRICE': 6, 'SCREEN': 7, 'SER&ACC': 8, 'STORAGE': 9
+aspect2idx={'CAMERA' : 0,
+            'FEATURES' : 1,
+            'BATTERY':2,
+            'PERFORMANCE' : 3,
+            'DESIGN' : 4,
+            'GENERAL' : 5,
+            'PRICE' : 6,
+            'SCREEN' : 7,
+            'SER&ACC' : 8,
+            'STORAGE' : 9 
+}   
+sentiment2idx={'Positive':2,
+               'Neutral':1,
+               'Negative':0,
 }
-sentiment2idx = {
-    'Positive': 2, 'Neutral': 1, 'Negative': 0
-}
-num_aspect=10
-# Convert label cell to tensor
-def convert_label(cell):
-    return torch.tensor([float(x) for x in cell.strip('[]').split()])
+sample='{FEATURES#Negative};{PERFORMANCE#Positive};{SER&ACC#Positive}'
+num_aspect = 10
+num_sentiment = 3
 
-# Load train data
-train = pd.read_csv("D:\code\intro_ai_ABSA\Train_preprocessed_with_-1.csv")
-sentences_train = list(train['comment'])
-labels_train = list(train['label'].apply(convert_label))
+def convert_label(text):
+    text = text.replace('{OTHERS};', '')
+    all_aspect = text.split(';')
+    all_aspect = [x.strip(r"{}") for x in all_aspect if x]  
+    # res=[-1 for x in range(2*num_aspect)]
+    # res=np.array(res)
+    res = np.zeros(2 * num_aspect)
+    for x in all_aspect:
+        cate, sent = x.split('#')
+        if cate in aspect2idx and sent in sentiment2idx:
+            cate_value = aspect2idx[cate]
+            sent_value = sentiment2idx[sent]
+            res[cate_value] = 1
+            res[cate_value + num_aspect] = sent_value
+    for idx in range(num_aspect):
+        if res[idx]==0:
+            res[idx+num_aspect]=-1
 
-# Initialize tokenizer
-tokenizer = AutoTokenizer.from_pretrained('bkai-foundation-models/vietnamese-bi-encoder')
+    
+    return res
+print(convert_label(sample))
+    
 
-# Define dataset
-class CustomTextDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_length=128):
-        self.texts = texts
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.labels = labels
+punc = string.punctuation
+tokenizer = ViTokenizer.tokenize
 
-    def __len__(self):
-        return len(self.texts)
+train_df = pd.read_csv("D:\code\intro_ai_ABSA\CAE____\Train.csv")
+# dev_df = pd.read_csv("Dev.csv")
+test_df = pd.read_csv("D:\code\intro_ai_ABSA\CAE____\Test.csv")
 
-    def __getitem__(self, idx):
-        text = self.texts[idx]
-        labels = torch.tensor(self.labels[idx], dtype=torch.float32)  # Convert labels to tensor
-        encoding = self.tokenizer(text, padding='max_length', truncation=True, max_length=self.max_length, return_tensors='pt')
-        dic = {key: val.squeeze(0) for key, val in encoding.items()}
-        dic['labels'] = labels  # Use 'labels' key here if consistent with your model
-        return dic
+def lowercase(df):
+    df['comment'] = df['comment'].str.lower()
+    return df
 
-# Create dataset and dataloader
-train_dataset = CustomTextDataset(sentences_train, labels_train, tokenizer)
-data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
-train_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=8, collate_fn=data_collator)
+def remove_punc(text):
+    return text.translate(str.maketrans('', '', punc))
 
+def final_rmv_punc(df):
+    df['comment'] = df['comment'].apply(remove_punc)
+    return df
 
-#model
-class AttentionInHtt(nn.Module):
-    def __init__(self, in_features, out_features, bias=True, softmax=True):
-        super().__init__()
-        self.W = nn.Linear(in_features, out_features, bias)
-        self.uw = nn.Linear(out_features, 1, bias=False)
-        self.softmax = softmax
+def remove_num(df):
+    df['comment'] = df['comment'].replace(to_replace=r'\d', value='', regex=True)
+    return df
 
-    def forward(self, h: torch.Tensor, mask: torch.Tensor):
-        u = self.W(h)  # (batch_size, seq_len, out_features)
-        u = torch.tanh(u)
-        similarities = self.uw(u)  # (batch_size, seq_len, 1)
-        similarities = similarities.squeeze(dim=-1)  # (batch_size, seq_len)
+def tokenize(df):
+    df['comment'] = df['comment'].apply(tokenizer)
+    return df
+def remove_emote(text):
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F"  # emoticons
+        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # flags
+        u"\U0001F1F2-\U0001F1F4"  # Macau flag
+        u"\U0001F1E6-\U0001F1FF"  # flags
+        u"\U00002702-\U000027B0"  # other symbols
+        u"\U000024C2-\U0001F251"  # enclosed characters
+        u"\U0001f926-\U0001f937"  # gestures
+        u"\U0001F1F2"             # specific characters
+        u"\U0001F1F4"
+        u"\U0001F620"
+        u"\u200d"
+        u"\u2640-\u2642"          # gender symbols
+        "]+", flags=re.UNICODE)
+    
+    # Substitute emojis with a space
+    text = emoji_pattern.sub(r" ", text)
+    return text
+def final_remove_emote(df):
+    df['comment'] = df['comment'].apply(remove_emote)    
+    return df
+def remove_newline(text):
+    # Replace newline characters with a single space
+    return text.replace('\n', ' ')
+def final_remove_newline(df):
+    df['comment'] = df['comment'].apply(remove_newline)
+    return df
 
-        # Mask the similarities
-        similarities = similarities.masked_fill(~mask.bool(), -float('inf'))
-
-        if self.softmax:
-            alpha = torch.softmax(similarities, dim=-1)
-            return alpha
-        else:
-            return similarities
-
-def element_wise_mul(input1, input2, return_not_sum_result=False):
-        output = input1 * input2.unsqueeze(2)  # Ensure correct broadcasting
-        result = output.sum(dim=1)
-        if return_not_sum_result:
-            return result, output
-        else:
-            return result
-class Cae(nn.Module):
-    def __init__(self, word_embedder, categories, polarities):
-        super().__init__()
-        self.word_embedder = word_embedder
-        self.categories = categories
-        self.polarities = polarities
-        self.category_num = len(categories)
-        self.polarity_num = len(polarities)
-        self.category_loss = nn.BCEWithLogitsLoss()
-        self.sentiment_loss = nn.CrossEntropyLoss(ignore_index=-1)
-
-        # Get the embedding dimension directly from the word embedder
-        embed_dim = word_embedder.embedding_dim  
-        self.embedding_layer_fc = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.embedding_layer_aspect_attentions = nn.ModuleList([AttentionInHtt(embed_dim, embed_dim) for 
-        _ in range(self.category_num)])
-        self.lstm_layer_aspect_attentions = nn.ModuleList([AttentionInHtt(embed_dim, embed_dim) for _ in range(self.category_num)])
-
-        # self.lstm = nn.LSTM(embed_dim, int(embed_dim / 2), batch_first=True, bidirectional=True)
-        self.lstm = nn.LSTM(embed_dim, int(embed_dim / 2), batch_first=True, bidirectional=True)
-
-        self.dropout_after_embedding = nn.Dropout(0.5)
-        self.dropout_after_lstm = nn.Dropout(0.5)
-
-        self.category_fcs = nn.ModuleList([nn.Sequential(nn.Linear(embed_dim * 2, 32), nn.ReLU(), nn.Linear(32, 1)) for _ in range(self.category_num)])
-        self.sentiment_fc = nn.Sequential(nn.Linear(embed_dim * 2, 32), nn.ReLU(), nn.Linear(32, self.polarity_num))
-
-    def forward(self, tokens, label, polarity_mask, mask):
-        word_embeddings = self.word_embedder(tokens)
-        word_embeddings = self.dropout_after_embedding(word_embeddings)
-
-        embeddings = word_embeddings
-        embedding_layer_category_outputs = []
-        embedding_layer_sentiment_outputs = []
-        for i in range(self.category_num):
-            embedding_layer_aspect_attention = self.embedding_layer_aspect_attentions[i]
-            alpha = embedding_layer_aspect_attention(embeddings, mask)
-
-            category_output = element_wise_mul(embeddings, alpha, return_not_sum_result=False)
-            embedding_layer_category_outputs.append(category_output)
-
-            # sentiment
-            category_output = category_output.unsqueeze(1)
-            sentiment_alpha = torch.matmul(category_output, embeddings.transpose(1, 2)).squeeze(1)
-            sentiment_alpha = softmax(sentiment_alpha, dim=-1)
-            sentiment_output = torch.matmul(sentiment_alpha.unsqueeze(1), word_embeddings).squeeze(1)
-            embedding_layer_sentiment_outputs.append(sentiment_output)
-
-        lstm_result, _ = self.lstm(word_embeddings)
-        lstm_result = self.dropout_after_lstm(lstm_result)
+def normalize_acronyms(sent):
+    text = sent
+    replace_list = {
+        'ô kêi': ' ok ', 'okie': ' ok ', ' o kê ': ' ok ',
+        'okey': ' ok ', 'ôkê': ' ok ', 'oki': ' ok ', ' oke ':  ' ok ',' okay':' ok ','okê':' ok ', ' okie' : ' ok',
+        ' tks ': u' cám ơn ', 'thks': u' cám ơn ', 'thanks': u' cám ơn ', 'ths': u' cám ơn ', 'thank': u' cám ơn ',
+        '⭐': 'star ', '*': 'star ', '🌟': 'star ', '🎉': u' tích cực ',
+        'kg ': u' không ','not': u' không ', u' kg ': u' không ', '"k ': u' không ',' kh ':u' không ','kô':u' không ','hok':u' không ',' kp ': u' không phải ',u' kô ': u' không ', '"ko ': u' không ', u' ko ': u' không ', u' k ': u' không ', 'khong': u' không ', u' hok ': u' không ',
+        'he he': ' tích cực ','hehe': ' tích cực ','hihi': ' tích cực ', 'haha': ' tích cực ', 'hjhj': ' tích cực ',
+        ' lol ': ' tiêu cực ',' cc ': ' tiêu cực ','cute': u' dễ thương ','huhu': ' tiêu cực ', ' vs ': u' với ', 'wa': ' quá ', 'wá': u' quá', 'j': u' gì ', '“': ' ',
+        ' sz ': u' cỡ ', 'size': u' cỡ ', u' đx ': u' được ', 'dk': u' được ', 'dc': u' được ', 'đk': u' được ',
+        'đc': u' được ','authentic': u' chuẩn chính hãng ',u' aut ': u' chuẩn chính hãng ', u' auth ': u' chuẩn chính hãng ', 'thick': u' tích cực ', 'store': u' cửa hàng ',
+        'shop': u' cửa hàng ', 'sp': u' sản phẩm ', 'gud': u' tốt ','god': u' tốt ','wel done':' tốt ', 'good': u' tốt ', 'gút': u' tốt ',
+        'sấu': u' xấu ','gut': u' tốt ', u' tot ': u' tốt ', u' nice ': u' tốt ', 'perfect': 'rất tốt', 'bt': u' bình thường ',
+        'time': u' thời gian ', 'qá': u' quá ', u' ship ': u' giao hàng ', u' m ': u' mình ', u' mik ': u' mình ',
+        'ể': 'ể', 'product': 'sản phẩm', 'quality': 'chất lượng','chat':' chất ', 'excelent': 'hoàn hảo', 'bad': 'tệ','fresh': ' tươi ','sad': ' tệ ',
+        'date': u' hạn sử dụng ', 'hsd': u' hạn sử dụng ','quickly': u' nhanh ', 'quick': u' nhanh ','fast': u' nhanh ','delivery': u' giao hàng ',u' síp ': u' giao hàng ',
+        'beautiful': u' đẹp tuyệt vời ', u' tl ': u' trả lời ', u' r ': u' rồi ', u' shopE ': u' cửa hàng ',u' order ': u' đặt hàng ',
+        'chất lg': u' chất lượng ',u' sd ': u' sử dụng ',u' dt ': u' điện thoại ',u' nt ': u' nhắn tin ',u' tl ': u' trả lời ',u' sài ': u' xài ',u'bjo':u' bao giờ ',
+        'thik': u' thích ',u' sop ': u' cửa hàng ', ' fb ': ' facebook ', ' face ': ' facebook ', ' very ': u' rất ',u'quả ng ':u' quảng  ',
+        'dep': u' đẹp ',u' xau ': u' xấu ','delicious': u' ngon ', u'hàg': u' hàng ', u'qủa': u' quả ',
+        'iu': u' yêu ','fake': u' giả mạo ', 'trl': 'trả lời', '><': u' tích cực ',
+        ' por ': u' tệ ',' poor ': u' tệ ', 'ib':u' nhắn tin ', 'rep':u' trả lời ',u'fback':' feedback ','fedback':' feedback ',
+        ' h ' : u' giờ', 
+        ' e ' : u' em'
         
-        lstm_layer_category_outputs = []
-        lstm_layer_sentiment_outputs = []
-        for i in range(self.category_num):
-            lstm_layer_aspect_attention = self.lstm_layer_aspect_attentions[i]
-            alpha = lstm_layer_aspect_attention(lstm_result, mask)
-            category_output = element_wise_mul(lstm_result, alpha, return_not_sum_result=False)
-            lstm_layer_category_outputs.append(category_output)
+    }
+    for k, v in replace_list.items():
+        text = text.replace(k, v)
+    return text
+def final_normalize_acronyms(df):
+    df['comment'] = df ['comment'].apply(normalize_acronyms)
+    return df   
 
-            # sentiment
-            category_output = category_output.unsqueeze(1)
-            sentiment_alpha = torch.matmul(category_output, lstm_result.transpose(1, 2))
-            sentiment_alpha = sentiment_alpha.squeeze(1)
-            sentiment_alpha = softmax(sentiment_alpha, dim=-1)
-            sentiment_alpha = sentiment_alpha.unsqueeze(1)
-            sentiment_output = torch.matmul(sentiment_alpha, lstm_result).squeeze(1)  # batch_size x 2*hidden_dim
-            lstm_layer_sentiment_outputs.append(sentiment_output)
+def preprocess(df):
+    df.drop(['n_star', 'date_time'],axis=1, inplace = True)
+    df = final_remove_emote(df)
+    df = final_remove_newline(df)
+    df = remove_num(df)
+    df = lowercase(df)
+    df = final_normalize_acronyms(df)
+    df = final_rmv_punc(df)
+    df = tokenize(df)
 
-        final_category_outputs = []
-        final_sentiment_outputs = []
-        for i in range(self.category_num):
-            fc = self.category_fcs[i]
-            category_output = torch.cat([embedding_layer_category_outputs[i], lstm_layer_category_outputs[i]], dim=-1)
-            final_category_output = fc(category_output)
-            final_category_outputs.append(final_category_output)
+    df['label'] = df['label'].apply(convert_label)
+    return df
 
-            sentiment_output = torch.cat([embedding_layer_sentiment_outputs[i], lstm_layer_sentiment_outputs[i]], dim=-1)
-            final_sentiment_output = self.sentiment_fc(sentiment_output)
-            final_sentiment_outputs.append(final_sentiment_output)
-
-        if label is not None:
-            category_labels = []
-            polarity_labels = []
-            # polarity_masks = []
-            for i in range(self.category_num):
-                category_labels.append(label[:, i]) #term [:,] for batch
-                polarity_labels.append(label[:, i + self.category_num])
-                # polarity_masks.append(polarity_mask[:, i]) #mask have same shape with label (just for category)
-
-            # loss = 0
-            loss = 0
-            for i in range(self.category_num):
-                category_temp_loss = self.category_loss(final_category_outputs[i].squeeze(dim=-1), category_labels[i])
-                sentiment_temp_loss = self.sentiment_loss(final_sentiment_outputs[i], polarity_labels[i].long())
-                loss += category_temp_loss
-                # temp=sentiment_temp_loss
-                # loss+=temp.item()
-                loss=loss+sentiment_temp_loss
-                # loss += sentiment_temp_loss
-
-            # # sentiment accuracy
-#             sentiment_logit = torch.cat(final_sentiment_outputs)
-#             sentiment_label = torch.cat(polarity_labels)
-#             sentiment_mask = torch.cat(polarity_masks)
-#             # self._accuracy(sentiment_logit, sentiment_label, sentiment_mask)
-
-#             # category f1
-#             final_category_outputs_prob = [torch.sigmoid(e) for e in final_category_outputs]
-#             category_prob = torch.cat(final_category_outputs_prob).squeeze()
-#             category_label = torch.cat(category_labels)
-
-
-        output = {
-            'pred_category': [torch.sigmoid(e) for e in final_category_outputs],
-            'pred_sentiment': [torch.softmax(e, dim=-1) for e in final_sentiment_outputs]
-        }
-        
-        return output, loss
-
-w2v=r'D:\code\intro_ai_ABSA\CAE____\W2V_150.txt'
-embedding_dim=150
-word_to_vec={}
-with open(w2v, 'r', encoding='utf-8') as file:
-    for line in file:
-        values=line.split()
-        word=values[0]
-        vector=np.asarray(values[1:], dtype='float32')
-        word_to_vec[word]=vector
-# Create a vocabulary and embedding matrix
-vocab=tokenizer.get_vocab()
-vocab_size=len(vocab)
-E=np.zeros((vocab_size, embedding_dim))
-'''the index of the word in vocab must be the same with the embedding matrix'''
-for word,idx in vocab.items():
-    if word in word_to_vec:
-        E[idx]=word_to_vec[word]
-    else:
-        E[idx]=np.random.normal(scale=0.6, size=(embedding_dim,))    
-embedding_matrix=torch.tensor(E, dtype=torch.float32)
-embedding_layer=nn.Embedding.from_pretrained(embedding_matrix, freeze=False)
-
-
-vocab=tokenizer.get_vocab()
-vocab_size=len(vocab)
-categories=aspect2idx.keys()
-polarities=sentiment2idx.keys()
-
-# word_embedder = torch.nn.Embedding(vocab_size, embedding_dim)
-lr=3e-4
-model = Cae(embedding_layer, categories, polarities)
-optimizer=torch.optim.Adam(model.parameters(), lr=lr)
-
-epochs=10
-for epoch in range(epochs):
-    model.train()
-    total_loss=0
-    for batch in tqdm(train_dataloader, desc=f"Training Epoch {epoch+1}/{epochs}"):
-        batch_size = train_dataloader.batch_size
-        polarity_mask = torch.ones(batch_size, num_aspect).float()
-        input=batch['input_ids']
-        attention_mask=batch['attention_mask']
-        labels=batch['labels']
-        output, loss = model(input, labels, polarity_mask,attention_mask)
-        loss.backward()
-        optimizer.step()
-        total_loss+=loss
-    avg_loss=total_loss/len(train_dataloader)
-    print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss}")
-# torch.save(model.state_dict(), "CAE_final.pth")
-
-
+train = preprocess(train_df)
+test = preprocess(test_df)
+test.to_csv('Test_final.csv')
+# train.to_csv('Train_preprocessed_with_-1.csv')
